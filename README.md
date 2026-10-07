@@ -64,3 +64,15 @@ python -m spotify2audio.cli "URL" --limit 0 --process 2 --normalize none
 ```
 Resultado: `Destino/Artista/Álbum/01 - Título.ext`, con etiquetas y portada incrustadas.
 Si repites el comando, las pistas ya existentes se omiten.
+
+## Pipeline completo (Fase 5)
+
+```powershell
+# Playlist entera (Ctrl+C cancela de forma limpia):
+python -m spotify2audio.cli "URL" --run --out "D:\Musica\MiPlaylist"
+# Con 3 pistas en paralelo y WAV para CD:
+python -m spotify2audio.cli "URL" --run --workers 3 --format wav --out .\cd
+```
+Al terminar, en la carpeta de salida:
+- `failed_tracks.txt`: pistas fallidas con el motivo y su enlace de Spotify. Repite el mismo comando para reintentar solo esas.
+- `<Nombre de la playlist>.m3u8`: lista de reproducción con rutas relativas, en el orden de Spotify.

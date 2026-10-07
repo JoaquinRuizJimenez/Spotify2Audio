@@ -45,6 +45,10 @@ class JobSummary:
     @property
     def failed(self) -> int:
         return self._count(TrackStatus.FAILED)
+    
+    @property
+    def cancelled(self) -> int:
+        return self._count(TrackStatus.CANCELLED)
 
     @property
     def failed_results(self) -> list[TrackResult]:
@@ -55,4 +59,5 @@ class JobSummary:
         return "\n".join(f"{r.track} | {r.error or 'error desconocido'}" for r in self.failed_results)
 
     def __str__(self) -> str:
-        return f"{self.ok} correctas, {self.skipped} omitidas, {self.failed} fallidas de {len(self.results)}"
+        extra = f", {self.cancelled} canceladas" if self.cancelled else ""
+        return f"{self.ok} correctas, {self.skipped} omitidas, {self.failed} fallidas{extra} de {len(self.results)}"
