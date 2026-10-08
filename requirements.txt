@@ -1,7 +1,7 @@
 # --- Runtime ---
 customtkinter>=5.2
 spotipy>=2.24
-yt-dlp>=2024.1.1        # actualizar a menudo: pip install -U yt-dlp
+yt-dlp[default]>=2025.11.12   # incluye yt-dlp-ejs; actualizar a menudo: pip install -U "yt-dlp[default]"
 mutagen>=1.47
 requests>=2.31
 Pillow>=10.0

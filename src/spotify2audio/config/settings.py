@@ -22,6 +22,7 @@ class Settings:
     create_folders: bool = True
     skip_existing: bool = True
     max_workers: int = 1
+    last_url: str = ""
 
     def __post_init__(self) -> None:
         if not self.output_dir:

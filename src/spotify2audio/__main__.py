@@ -1,4 +1,4 @@
-"""Fase 1: comprobación del entorno. La GUI se conectará aquí en la Fase 6."""
+"""Punto de entrada: abre la interfaz gráfica. `--check` comprueba el entorno (FFmpeg, Deno, credenciales)."""
 from __future__ import annotations
 
 import logging
@@ -8,9 +8,10 @@ from .config.settings import Settings
 from .core.errors import AppError
 from .utils.ffmpeg_check import ensure_ffmpeg, ffmpeg_version
 from .utils.logging_setup import setup_logging
+from .utils.ytdlp_env import check_js_runtime
 
 
-def main() -> int:
+def check_environment() -> int:
     setup_logging()
     log = logging.getLogger("spotify2audio")
     ok = True
@@ -29,9 +30,22 @@ def main() -> int:
         log.error("%s", exc)
         ok = False
 
+    runtime, msg = check_js_runtime()
+    (log.info if runtime == "deno" else log.warning)("JS runtime: %s", msg)
+
     settings = Settings.load()
     log.info("Carpeta de salida: %s", settings.output_dir)
     return 0 if ok else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    import sys
+    args = sys.argv[1:] if argv is None else argv
+    if "--check" in args:
+        return check_environment()
+    from .gui.app import run_gui
+    run_gui()
+    return 0
 
 
 if __name__ == "__main__":

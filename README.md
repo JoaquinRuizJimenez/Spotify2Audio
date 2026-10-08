@@ -76,3 +76,20 @@ python -m spotify2audio.cli "URL" --run --workers 3 --format wav --out .\cd
 Al terminar, en la carpeta de salida:
 - `failed_tracks.txt`: pistas fallidas con el motivo y su enlace de Spotify. Repite el mismo comando para reintentar solo esas.
 - `<Nombre de la playlist>.m3u8`: lista de reproducción con rutas relativas, en el orden de Spotify.
+
+## Interfaz gráfica (Fase 6)
+
+```powershell
+python -m spotify2audio          # abre la aplicación
+python -m spotify2audio --check  # solo comprueba FFmpeg, Deno y credenciales
+```
+También puedes hacer doble clic en `Spotify2Audio.bat` (sin ventana de consola).
+
+Flujo: pega el enlace → **Cargar** → elige formato y carpeta → **Iniciar conversión**.
+Tus opciones y la última URL se guardan al cerrar. Si algo falla, el motivo aparece en la cola,
+en el registro y en `failed_tracks.txt`; vuelve a pulsar *Iniciar* para reintentar solo lo que falta.
+
+Tests de la ventana real (opcionales; abren una ventana unos segundos):
+```powershell
+$env:S2A_GUI_TESTS = "1"; pytest tests/test_gui_smoke.py
+```

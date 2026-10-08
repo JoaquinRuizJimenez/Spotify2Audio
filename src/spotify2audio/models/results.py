@@ -45,7 +45,7 @@ class JobSummary:
     @property
     def failed(self) -> int:
         return self._count(TrackStatus.FAILED)
-    
+
     @property
     def cancelled(self) -> int:
         return self._count(TrackStatus.CANCELLED)
