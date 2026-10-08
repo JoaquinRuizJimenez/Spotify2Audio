@@ -23,14 +23,16 @@ from ..models.results import JobSummary, TrackResult, TrackStatus
 from ..models.track import Track
 from ..services.audio_processor import SAMPLE_RATE, AudioProcessor
 from ..services.cover_fetcher import CoverFetcher
+from ..services.device_sync import DeviceSync
 from ..services.downloader import Downloader
 from ..services.organizer import Organizer
 from ..services.tagger import Tagger
+from ..utils.diskspace import free_bytes
 from ..utils.sanitize import sanitize_component
 from .cancellation import CancellationToken
 from .errors import AppError, CancelledError, DeviceError
-from .events import (EventCallback, JobFinished, JobStarted, Stage, TrackFinished, TrackProgress,
-                     TrackStarted)
+from .events import (EventCallback, JobFinished, JobStarted, Stage, SyncProgress, TrackFinished,
+                     TrackProgress, TrackStarted)
 
 log = logging.getLogger(__name__)
 FAILED_FILE = "failed_tracks.txt"
@@ -45,22 +47,16 @@ def estimate_size_bytes(tracks: list[Track], options: JobOptions) -> int:
     return int(sum(t.duration_s * rate * 1.05 + _OVERHEAD_PER_TRACK for t in tracks))
 
 
-def _nearest_existing(path: Path) -> Path:
-    path = path.resolve()
-    while not path.exists() and path.parent != path:
-        path = path.parent
-    return path
-
-
 class Pipeline:
     def __init__(self, options: JobOptions, *, downloader=None, processor=None, covers=None, tagger=None,
-                 on_event: EventCallback | None = None, work_root: Path | None = None,
+                 device_sync=None, on_event: EventCallback | None = None, work_root: Path | None = None,
                  write_reports: bool = True) -> None:
         self.options = options
         self.downloader = downloader or Downloader()
         self.processor = processor or AudioProcessor()       # falla aquí (rápido) si falta FFmpeg
         self.covers = covers or CoverFetcher()
         self.tagger = tagger or Tagger()
+        self.device_sync = device_sync or DeviceSync()
         self.on_event = on_event
         self.work_root = Path(work_root) if work_root else cache_dir() / "work"
         self.write_reports = write_reports
@@ -106,6 +102,8 @@ class Pipeline:
         summary = JobSummary(playlist_name=playlist.name, results=results)
         if self.write_reports:
             self._write_reports(playlist, summary, cancelled=cancel.is_cancelled)
+        if o.device_path and not cancel.is_cancelled:
+            self._sync_device(summary, cancel)
         log.info("Terminado: %s", summary)
         self._emit(JobFinished(summary))
         return summary
@@ -193,10 +191,34 @@ class Pipeline:
         pending = [t for t, p, d in zip(tracks, targets, duplicate)
                    if not d and not (self.options.skip_existing and p.exists() and p.stat().st_size > 0)]
         needed = estimate_size_bytes(pending, self.options)
-        free = shutil.disk_usage(_nearest_existing(self.options.output_dir)).free
+        free = free_bytes(self.options.output_dir)
         if needed * 1.1 > free:
             raise DeviceError(f"Espacio insuficiente en el destino: se necesitan ~{needed / 1e6:.0f} MB "
                               f"y hay {free / 1e6:.0f} MB libres.")
+
+    # ------------------------------------------------------------- dispositivo
+    def _sync_device(self, summary: JobSummary, cancel: CancellationToken) -> None:
+        """Copia lo procesado al dispositivo. Un fallo aquí no invalida los archivos locales."""
+        files: list[Path] = []
+        for r in summary.results:
+            if r.status in (TrackStatus.OK, TrackStatus.SKIPPED) and r.output_path and r.output_path.exists() \
+                    and r.output_path not in files:
+                files.append(r.output_path)
+        if not files:
+            return
+        if summary.m3u_path and summary.m3u_path.exists():
+            files.append(summary.m3u_path)
+        log.info("Copiando %d archivos a %s", len(files), self.options.device_path)
+        try:
+            summary.sync = self.device_sync.sync(
+                files, self.options.output_dir, self.options.device_path, cancel=cancel,
+                on_progress=lambda done, total, name: self._emit(SyncProgress(done, total, name)))
+        except AppError as exc:
+            log.warning("Copia al dispositivo fallida: %s", exc)
+            summary.sync_error = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Error inesperado al copiar al dispositivo")
+            summary.sync_error = f"Error inesperado: {type(exc).__name__}: {exc}"
 
     # --------------------------------------------------------------- informes
     def _write_reports(self, playlist: Playlist, summary: JobSummary, cancelled: bool) -> None:
@@ -221,6 +243,7 @@ class Pipeline:
                     m3u.append(f"#EXTINF:{int(r.track.duration_s)},{r.track}")
                     m3u.append(r.output_path.relative_to(out).as_posix())
                 name = sanitize_component(playlist.name, fallback="playlist")
-                (out / f"{name}.m3u8").write_text("\n".join(m3u) + "\n", encoding="utf-8")
+                summary.m3u_path = out / f"{name}.m3u8"
+                summary.m3u_path.write_text("\n".join(m3u) + "\n", encoding="utf-8")
         except OSError as exc:
             log.warning("No se pudieron escribir los informes: %s", exc)

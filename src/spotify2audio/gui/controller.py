@@ -7,7 +7,7 @@ import threading
 from typing import Any, Callable
 
 from ..core.cancellation import CancellationToken
-from ..core.errors import AppError
+from ..core.errors import AppError, MissingCredentialsError
 from ..core.pipeline import Pipeline
 from ..models.options import JobOptions
 from ..models.playlist import Playlist
@@ -16,8 +16,8 @@ from ..services.spotify_client import SpotifyClient
 log = logging.getLogger(__name__)
 
 # Tipos de mensaje que recibe la GUI
-LOAD_PROGRESS, LOADED, LOAD_ERROR, EVENT, JOB_DONE, JOB_ERROR = (
-    "load_progress", "loaded", "load_error", "event", "job_done", "job_error")
+LOAD_PROGRESS, LOADED, LOAD_ERROR, EVENT, JOB_DONE, JOB_ERROR, NEED_CREDENTIALS = (
+    "load_progress", "loaded", "load_error", "event", "job_done", "job_error", "need_credentials")
 
 
 class Controller:
@@ -54,6 +54,10 @@ class Controller:
         self._cancel = CancellationToken()
         return self._launch(self._job_worker, playlist, options, self._cancel)
 
+    def reset_client(self) -> None:
+        """Olvida el cliente de Spotify (p. ej. tras guardar credenciales nuevas)."""
+        self._client = None
+
     def cancel(self) -> None:
         if self._cancel:
             self._cancel.cancel()
@@ -82,6 +86,8 @@ class Controller:
             playlist = self._client.get_playlist(
                 url, progress=lambda done, total: self._put(LOAD_PROGRESS, (done, total)))
             self._put(LOADED, playlist)
+        except MissingCredentialsError as exc:
+            self._put(NEED_CREDENTIALS, str(exc))
         except AppError as exc:
             self._put(LOAD_ERROR, str(exc))
         except Exception as exc:  # noqa: BLE001

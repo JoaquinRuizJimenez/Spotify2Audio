@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 
 from ..config.paths import log_dir
@@ -16,7 +17,7 @@ def setup_logging(level: int = logging.INFO, extra_handlers: list[logging.Handle
         return
     formatter = logging.Formatter(_FMT)
     handlers: list[logging.Handler] = [
-        logging.StreamHandler(),
+        *([logging.StreamHandler()] if sys.stderr is not None else []),     # .exe sin consola: stderr es None
         RotatingFileHandler(log_dir() / "spotify2audio.log", maxBytes=1_000_000,
                             backupCount=3, encoding="utf-8"),
         *(extra_handlers or []),

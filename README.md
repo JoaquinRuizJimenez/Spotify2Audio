@@ -93,3 +93,36 @@ Tests de la ventana real (opcionales; abren una ventana unos segundos):
 ```powershell
 $env:S2A_GUI_TESTS = "1"; pytest tests/test_gui_smoke.py
 ```
+
+## Copiar a un dispositivo (Fase 7)
+
+Marca **«Copiar también a un dispositivo»** y elige la unidad en la lista (pulsa *Actualizar* si la conectaste después).
+Las canciones se procesan siempre en la carpeta de destino y, al terminar, se copian a `<unidad>\Music\Artista\Álbum\…`
+junto con la lista `.m3u8`.
+
+- La copia es segura: escribe en un archivo temporal y lo renombra al terminar, omite lo que ya está y comprueba el espacio.
+- Solo se listan unidades **extraíbles**. Un disco duro USB que Windows trate como «fijo» no aparece: usa *Examinar…* y elígelo como carpeta de destino.
+- **iPod con firmware original de Apple**: el iPod solo muestra lo que está en su base de datos, así que los archivos copiados no aparecerán en su menú.
+  Opciones: instalar [Rockbox](https://www.rockbox.org), o añadir la carpeta de destino a iTunes / la app Música y sincronizar desde ahí.
+- Expulsa siempre la unidad con «Quitar hardware de forma segura» antes de desconectarla.
+
+## Credenciales de Spotify desde la aplicación
+
+Si no hay credenciales, al pulsar *Cargar* se abre el diálogo para guardarlas (botón **Credenciales…**).
+Se guardan en el Administrador de credenciales de Windows (o, si no está disponible, en un `.env` dentro de la
+carpeta de configuración). También se leen de variables de entorno o de un `.env` en la carpeta actual o junto al `.exe`.
+
+## Crear el ejecutable (.exe)
+
+```powershell
+pip install -r requirements-build.txt
+python scripts/build_exe.py --fetch-tools --zip
+```
+`--fetch-tools` copia `ffmpeg`, `ffprobe` y `deno` desde tu PATH a `bin/` (si no, cópialos tú a mano).
+El resultado queda en `dist\Spotify2Audio\` (ejecutable: `Spotify2Audio.exe`) y, con `--zip`, en un `.zip` listo para compartir.
+Se genera una **carpeta** (no un único archivo): arranca más rápido y los antivirus lo marcan menos.
+
+Notas para distribuirlo:
+- Windows SmartScreen o el antivirus pueden avisar la primera vez porque el programa no está firmado digitalmente.
+- Incluir FFmpeg en lo que compartas implica cumplir su licencia (las compilaciones de Gyan son GPL).
+- Cada persona necesita sus propias credenciales de Spotify (cuenta Premium y ser añadida en tu Dashboard, máximo 5 usuarios en modo desarrollo).

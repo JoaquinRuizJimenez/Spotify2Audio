@@ -73,11 +73,11 @@ class FakeTagger:
         self.written.append((track.spotify_id, replaygain))
 
 
-def build(tmp_path, tracks=None, downloader=None, tagger=None, events=None, processor=None, **opt):
+def build(tmp_path, tracks=None, downloader=None, tagger=None, events=None, processor=None, device_sync=None, **opt):
     options = JobOptions(output_dir=tmp_path / "out", **opt)
     pl = Playlist("p", "Mi Lista", tracks=tracks if tracks is not None else make_tracks())
     pipe = Pipeline(options, downloader=downloader or FakeDownloader(), processor=processor or FakeProcessor(),
-                    covers=FakeCovers(), tagger=tagger or FakeTagger(),
+                    covers=FakeCovers(), tagger=tagger or FakeTagger(), device_sync=device_sync,
                     on_event=events.append if events is not None else None, work_root=tmp_path / "work")
     return pipe, pl, options
 
@@ -222,3 +222,48 @@ def test_missing_ffmpeg_fails_fast(tmp_path, monkeypatch):
     monkeypatch.setattr(ap, "ensure_ffmpeg", lambda: (_ for _ in ()).throw(DependencyMissingError("sin ffmpeg")))
     with pytest.raises(DependencyMissingError):
         Pipeline(JobOptions(output_dir=tmp_path), downloader=FakeDownloader(), covers=FakeCovers(), tagger=FakeTagger())
+
+
+# ---- copia al dispositivo -------------------------------------------------------------------------------
+class FakeSync:
+    def __init__(self, error=None):
+        self.error, self.calls = error, []
+
+    def sync(self, files, source_root, target_root, on_progress=None, cancel=None):
+        from spotify2audio.models.results import SyncResult
+        self.calls.append((list(files), source_root, target_root))
+        if self.error:
+            raise self.error
+        on_progress and on_progress(len(files), len(files), "")
+        return SyncResult(target_root, copied=len(files))
+
+
+def test_device_sync_receives_files_and_playlist(tmp_path):
+    sync, ev = FakeSync(), []
+    pipe, pl, o = build(tmp_path, device_sync=sync, events=ev, device_path=tmp_path / "usb" / "Music")
+    s = pipe.run(pl)
+    files, src, dst = sync.calls[0]
+    assert src == o.output_dir and dst == tmp_path / "usb" / "Music"
+    assert len(files) == 5 and files[-1].name == "Mi Lista.m3u8"          # 4 canciones + la lista de reproducción
+    assert s.sync.copied == 5 and s.sync_error is None and s.ok == 4
+    from spotify2audio.core.events import SyncProgress
+    assert any(isinstance(e, SyncProgress) for e in ev)
+
+
+def test_device_error_does_not_invalidate_local_files(tmp_path):
+    pipe, pl, o = build(tmp_path, device_sync=FakeSync(DeviceError("Espacio insuficiente")), device_path=tmp_path / "usb")
+    s = pipe.run(pl)
+    assert s.ok == 4 and s.sync is None and "Espacio" in s.sync_error
+    assert all(r.output_path.exists() for r in s.results)
+
+
+def test_no_device_no_sync_and_cancel_skips_it(tmp_path):
+    sync = FakeSync()
+    pipe, pl, _ = build(tmp_path, device_sync=sync)
+    pipe.run(pl)
+    assert sync.calls == []
+    token = CancellationToken()
+    token.cancel()
+    pipe2, pl2, _ = build(tmp_path, device_sync=sync, device_path=tmp_path / "usb")
+    pipe2.run(pl2, cancel=token)
+    assert sync.calls == []

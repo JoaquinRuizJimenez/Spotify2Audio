@@ -22,6 +22,10 @@ class InvalidSpotifyUrlError(SpotifyError):
     pass
 
 
+class MissingCredentialsError(SpotifyError):
+    """No hay Client ID / Secret de Spotify configurados."""
+
+
 class MatchNotFoundError(AppError):
     """No se encontró un candidato aceptable en YouTube."""
 

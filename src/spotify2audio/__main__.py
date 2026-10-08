@@ -8,7 +8,7 @@ from .config.settings import Settings
 from .core.errors import AppError
 from .utils.ffmpeg_check import ensure_ffmpeg, ffmpeg_version
 from .utils.logging_setup import setup_logging
-from .utils.ytdlp_env import check_js_runtime
+from .utils.ytdlp_env import check_js_runtime, prepare_environment
 
 
 def check_environment() -> int:
@@ -40,6 +40,7 @@ def check_environment() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     import sys
+    prepare_environment()
     args = sys.argv[1:] if argv is None else argv
     if "--check" in args:
         return check_environment()

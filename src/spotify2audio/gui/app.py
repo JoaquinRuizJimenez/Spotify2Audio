@@ -14,16 +14,19 @@ import customtkinter as ctk
 
 from ..config.paths import cache_dir
 from ..config.settings import Settings
-from ..core.events import JobStarted, TrackFinished, TrackProgress, TrackStarted
+from ..core.events import JobStarted, SyncProgress, TrackFinished, TrackProgress, TrackStarted
 from ..models.options import OutputFormat
 from ..models.playlist import Playlist
 from ..models.results import TrackStatus
+from ..services.device_sync import Drive, list_drives
 from . import aero
 from .aero import (ACTIVE_BLUE, BG, ERR_RED, OK_GREEN, PANEL_BORDER, STATUS_BG, TEXT, TEXT_DIM, AeroButton,
                    AeroGroup, AeroProgress, AeroToggle, make_entry, make_menu, ui_font)
-from .controller import EVENT, JOB_DONE, JOB_ERROR, LOAD_ERROR, LOAD_PROGRESS, LOADED, Controller
+from .controller import (EVENT, JOB_DONE, JOB_ERROR, LOAD_ERROR, LOAD_PROGRESS, LOADED, NEED_CREDENTIALS,
+                         Controller)
+from .credentials_dialog import CredentialsDialog
 from .form_state import BITRATE_LABELS, NORMALIZE_LABELS, WORKER_CHOICES, FormState
-from .progress_model import ACTIVE, QUEUED, ProgressTracker, row_for_progress, row_for_result
+from .progress_model import ACTIVE, QUEUED, ProgressTracker, row_for_progress, row_for_result, summary_message
 
 log = logging.getLogger(__name__)
 APP_TITLE = "Spotify2Audio"
@@ -35,12 +38,14 @@ FORMAT_OPTIONS = [(OutputFormat.MP3.value, "MP3  ·  iPod y reproductores MP3"),
 
 
 class App(ctk.CTk):
-    def __init__(self, controller: Controller | None = None) -> None:
+    def __init__(self, controller: Controller | None = None, drive_lister=None) -> None:
         super().__init__()
         ctk.set_appearance_mode("light")
         self.title(APP_TITLE)
-        self.geometry("1040x800")
-        self.minsize(960, 720)
+        screen_h = self.winfo_screenheight()
+        height = min(880, max(screen_h - 100, 640))
+        self.geometry(f"1040x{height}")
+        self.minsize(960, min(760, height))
         self.configure(fg_color=BG)
         self._set_icon()
 
@@ -52,6 +57,11 @@ class App(ctk.CTk):
         self.running = False
         self._phase = 0.0
         self._form_widgets: list = []
+        self._drive_lister = drive_lister or list_drives
+        self._drives: list[Drive] = []
+        self._syncing = False
+        self._sync_fraction = 0.0
+        self._compact = screen_h < 900          # pantallas pequeñas: la columna izquierda se desplaza
 
         aero.style_treeview(self, getattr(self, "_get_window_scaling", lambda: 1.0)())
         self.grid_columnconfigure(0, weight=1)
@@ -60,6 +70,7 @@ class App(ctk.CTk):
         self._build_body()
         self._build_actions()
         self._build_statusbar()
+        self._refresh_drives()
         self._update_format_dependent()
         self._sync_buttons()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -98,7 +109,11 @@ class App(ctk.CTk):
         body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(10, 4))
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
-        left = ctk.CTkFrame(body, fg_color="transparent", width=380)
+        if self._compact:
+            left = ctk.CTkScrollableFrame(body, fg_color="transparent", width=360, scrollbar_button_color="#C3CAD6",
+                                          scrollbar_button_hover_color="#9FB0C8")
+        else:
+            left = ctk.CTkFrame(body, fg_color="transparent", width=380)
         left.grid(row=0, column=0, sticky="ns", padx=(0, 10))
         right = ctk.CTkFrame(body, fg_color="transparent")
         right.grid(row=0, column=1, sticky="nsew")
@@ -142,6 +157,7 @@ class App(ctk.CTk):
         self.quality_hint = ctk.CTkLabel(g.body, text="", text_color=TEXT_DIM, font=ui_font(12), anchor="w",
                                          justify="left", wraplength=330)
         self.quality_hint.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        self.quality_hint.grid_remove()
         self._form_widgets.append(self.bitrate_menu)
 
         g = AeroGroup(left, "Audio y archivos")
@@ -174,6 +190,20 @@ class App(ctk.CTk):
         self.browse_btn = AeroButton(row, "Examinar…", self._on_browse, width=92)
         self.browse_btn.grid(row=0, column=1)
         self._form_widgets += [self.dir_entry, self.browse_btn]
+
+        self.device_var = tk.BooleanVar(value=self.form.copy_to_device)
+        self.device_check = AeroToggle(g.body, "Copiar también a un dispositivo (USB, reproductor, iPod)", "check",
+                                       self.device_var, command=self._on_device_toggle)
+        self.device_check.grid(row=1, column=0, sticky="w", pady=(10, 2))
+        drow = ctk.CTkFrame(g.body, fg_color="transparent")
+        drow.grid(row=2, column=0, sticky="ew")
+        drow.grid_columnconfigure(0, weight=1)
+        self.device_choice = tk.StringVar(value="")
+        self.device_menu = make_menu(drow, ["—"], self.device_choice, width=240)
+        self.device_menu.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.refresh_btn = AeroButton(drow, "Actualizar", self._on_refresh_drives, width=84)
+        self.refresh_btn.grid(row=0, column=1)
+        self._form_widgets += [self.device_check, self.device_menu, self.refresh_btn]
 
     # ---- columna derecha: cola y registro --------------------------------------------------
     def _build_right(self, right: ctk.CTkFrame) -> None:
@@ -211,7 +241,7 @@ class App(ctk.CTk):
         self.log.tag_config("dim", foreground=TEXT_DIM)
 
     def _empty_hint(self) -> None:
-        self.tree.insert("", "end", iid="hint", values=("", "Carga una playlist para ver aquí sus canciones.", ""), tags=("queued",))
+        self.tree.insert("", "end", iid="hint", values=("", "Aquí aparecerán tus canciones", ""), tags=("queued",))
 
     # ---- barra de acciones y de estado ------------------------------------------------------
     def _build_actions(self) -> None:
@@ -233,7 +263,8 @@ class App(ctk.CTk):
         self.start_btn = AeroButton(btns, "Iniciar conversión", self._on_start, width=150, height=32, primary=True)
         self.cancel_btn = AeroButton(btns, "Cancelar", self._on_cancel, width=90, height=32)
         self.open_btn = AeroButton(btns, "Abrir carpeta", self._on_open_folder, width=110, height=32)
-        for i, b in enumerate((self.start_btn, self.cancel_btn, self.open_btn)):
+        self.creds_btn = AeroButton(btns, "Credenciales…", self._on_credentials, width=110, height=32)
+        for i, b in enumerate((self.start_btn, self.cancel_btn, self.open_btn, self.creds_btn)):
             b.grid(row=0, column=i, padx=(0 if i == 0 else 8, 0))
 
     def _build_statusbar(self) -> None:
@@ -252,14 +283,17 @@ class App(ctk.CTk):
         return FormState(url=self.url_entry.get().strip(), output_dir=self.dir_entry.get().strip(),
                          output_format=self.fmt_var.get(), bitrate=self.bitrate_var.get(), normalize=norm,
                          create_folders=self.folders_var.get(), skip_existing=self.skip_var.get(),
-                         workers=self.workers_var.get())
+                         workers=self.workers_var.get(), copy_to_device=self.device_var.get(),
+                         device=str(drive.mountpoint) if (drive := self._selected_drive()) else "")
 
     def _update_format_dependent(self) -> None:
         wav = self.fmt_var.get() == OutputFormat.WAV.value
         self.bitrate_menu.configure(state="disabled" if wav else "normal")
-        self.quality_hint.configure(text=(
-            "Se guarda a 16 bits / 44,1 kHz estéreo, el formato que exigen los CD de audio." if wav else
-            "Una tasa más alta no mejora el audio de origen; solo afecta al tamaño del archivo."))
+        if wav:
+            self.quality_hint.configure(text="16 bit / 44,1 kHz estéreo (estándar de CD).")
+            self.quality_hint.grid()
+        else:
+            self.quality_hint.grid_remove()
 
     def _set_form_enabled(self, enabled: bool) -> None:
         for w in self._form_widgets:
@@ -269,8 +303,10 @@ class App(ctk.CTk):
                 w.configure(state="normal" if enabled else "disabled")
         if enabled:
             self._update_format_dependent()
+            self._apply_device_state()
         else:
             self.bitrate_menu.configure(state="disabled")
+            self.device_menu.configure(state="disabled")
 
     def _sync_buttons(self) -> None:
         loading = self.controller.busy and not self.running
@@ -287,6 +323,39 @@ class App(ctk.CTk):
             self.log.insert("end", f"{datetime.now():%H:%M:%S}  {text}\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+
+    # ---- dispositivos ----------------------------------------------------------------------------
+    def _selected_drive(self) -> Drive | None:
+        return next((d for d in self._drives if d.display == self.device_choice.get()), None)
+
+    def _refresh_drives(self) -> None:
+        previous = self._selected_drive()
+        wanted = str(previous.mountpoint) if previous else self.form.device
+        try:
+            self._drives = self._drive_lister()
+        except Exception:  # noqa: BLE001 - la detección nunca debe romper la interfaz
+            log.exception("No se pudieron listar las unidades")
+            self._drives = []
+        if self._drives:
+            values = [d.display for d in self._drives]
+            chosen = next((d for d in self._drives if str(d.mountpoint) == wanted), self._drives[0])
+            self.device_menu.configure(values=values)
+            self.device_choice.set(chosen.display)
+        else:
+            self.device_menu.configure(values=["No se detectó ninguna unidad extraíble"])
+            self.device_choice.set("No se detectó ninguna unidad extraíble")
+        self._apply_device_state()
+
+    def _apply_device_state(self) -> None:
+        usable = self.device_var.get() and bool(self._drives) and not self.running
+        self.device_menu.configure(state="normal" if usable else "disabled")
+
+    def _on_device_toggle(self) -> None:
+        self._refresh_drives()
+
+    def _on_refresh_drives(self) -> None:
+        self._refresh_drives()
+        self._set_status(f"{len(self._drives)} unidad(es) extraíble(s) detectada(s)")
 
     # ---- acciones de usuario -------------------------------------------------------------------
     def _on_browse(self) -> None:
@@ -330,6 +399,9 @@ class App(ctk.CTk):
         if problems:
             messagebox.showwarning(APP_TITLE, "\n".join(problems))
             return
+        drive = self._selected_drive() if form.copy_to_device else None
+        if drive and drive.warning and not messagebox.askyesno(APP_TITLE, drive.warning, icon="warning"):
+            return
         options = form.to_job_options()
         form.to_settings().save()
         if not self.controller.start(self.playlist, options):
@@ -338,6 +410,7 @@ class App(ctk.CTk):
         self.tracker = ProgressTracker(len(self.playlist))
         for i in range(len(self.playlist)):
             self._set_row(i, QUEUED)
+        self._syncing = False
         self._set_form_enabled(False)
         self.progress.set(0.0, shine=True)
         self.now_label.configure(text="Iniciando…")
@@ -345,6 +418,16 @@ class App(ctk.CTk):
         self._set_status("Convirtiendo…")
         self._log(f"Iniciando «{self.playlist.name}» ({len(self.playlist)} canciones, {options.output_format.value.upper()})", "dim")
         self._sync_buttons()
+
+    def _on_credentials(self, reason: str | None = None) -> None:
+        CredentialsDialog(self, on_saved=self._after_credentials, reason=reason)
+
+    def _after_credentials(self) -> None:
+        self.controller.reset_client()
+        self._set_status("Credenciales guardadas")
+        self._log("Credenciales de Spotify guardadas", "dim")
+        if self.url_entry.get().strip():
+            self._on_load()
 
     def _on_cancel(self) -> None:
         self.controller.cancel()
@@ -366,12 +449,16 @@ class App(ctk.CTk):
     def _poll(self) -> None:
         for kind, payload in self.controller.drain():
             handler = {LOAD_PROGRESS: self._h_load_progress, LOADED: self._h_loaded, LOAD_ERROR: self._h_load_error,
-                       EVENT: self._h_event, JOB_DONE: self._h_job_done, JOB_ERROR: self._h_job_error}[kind]
+                       EVENT: self._h_event, JOB_DONE: self._h_job_done, JOB_ERROR: self._h_job_error,
+                       NEED_CREDENTIALS: self._h_need_credentials}[kind]
             handler(payload)
         if self.running and self.tracker:
             self._phase += 0.03
-            self.progress.set(self.tracker.fraction, shine=True, phase=self._phase)
-            self.count_label.configure(text=f"{self.tracker.label}   ·   {self.tracker.fraction:.0%}")
+            if self._syncing:
+                self.progress.set(self._sync_fraction, shine=True, phase=self._phase)
+            else:
+                self.progress.set(self.tracker.fraction, shine=True, phase=self._phase)
+                self.count_label.configure(text=f"{self.tracker.label}   ·   {self.tracker.fraction:.0%}")
         self.after(60, self._poll)
 
     def _h_load_progress(self, payload) -> None:
@@ -392,6 +479,13 @@ class App(ctk.CTk):
         self._set_status(f"{len(playlist)} canciones listas")
         self._log(f"Playlist cargada: «{playlist.name}», {len(playlist)} canciones", "dim")
         self._sync_buttons()
+
+    def _h_need_credentials(self, message: str) -> None:
+        self.load_btn.set_enabled(True)
+        self.info_label.configure(text="Faltan las credenciales de Spotify.", text_color=ERR_RED)
+        self._set_status("Configura las credenciales de Spotify")
+        self._sync_buttons()
+        self._on_credentials(reason="Todavía no has configurado las claves de Spotify.")
 
     def _h_load_error(self, message: str) -> None:
         self.info_label.configure(text=message, text_color=ERR_RED)
@@ -428,28 +522,39 @@ class App(ctk.CTk):
                 self._log(f"OK     {r.track}", "ok")
             elif r.status is TrackStatus.SKIPPED:
                 self._log(f"Omitida  {r.track}", "dim")
+        elif isinstance(ev, SyncProgress):
+            self._syncing = True
+            self._sync_fraction = ev.done / ev.total if ev.total else 1.0
+            self.now_label.configure(text=f"Copiando al dispositivo: {ev.current}" if ev.current else "Copia al dispositivo terminada")
+            self.count_label.configure(text=f"{ev.done} de {ev.total} archivos")
+            self._set_status("Copiando al dispositivo…")
         elif isinstance(ev, JobStarted):
             self._set_status(f"Convirtiendo «{ev.playlist_name}»…")
 
     def _finish_job(self) -> None:
         self.running = False
+        self._syncing = False
         self._set_form_enabled(True)
         self.progress.set(self.tracker.fraction if self.tracker else 0.0, shine=False)
         self._sync_buttons()
 
     def _h_job_done(self, summary) -> None:
         self._finish_job()
+        self._syncing = False
         if self.tracker and not summary.cancelled:
             self.progress.set(1.0 if not summary.failed else self.tracker.fraction)
         self.now_label.configure(text="Cancelado." if summary.cancelled else "Proceso terminado.")
         self.count_label.configure(text="")
         self._set_status(str(summary))
         self._log(f"Resumen: {summary}", "dim")
+        if summary.sync:
+            self._log(f"Dispositivo: {summary.sync}", "dim" if not summary.sync.failed else "err")
+        if summary.sync_error:
+            self._log(f"ERROR al copiar al dispositivo: {summary.sync_error}", "err")
         if summary.cancelled:
             return
-        text = f"{summary}."
-        if summary.failed:
-            text += "\n\nLas canciones fallidas están en failed_tracks.txt dentro de la carpeta de destino.\nPulsa «Iniciar conversión» de nuevo para reintentarlas."
+        level, text = summary_message(summary)
+        if level == "warning":
             messagebox.showwarning(APP_TITLE, text)
         else:
             messagebox.showinfo(APP_TITLE, "¡Listo!\n\n" + text)

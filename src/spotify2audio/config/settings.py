@@ -23,6 +23,8 @@ class Settings:
     skip_existing: bool = True
     max_workers: int = 1
     last_url: str = ""
+    copy_to_device: bool = False
+    last_device: str = ""
 
     def __post_init__(self) -> None:
         if not self.output_dir:

@@ -46,9 +46,16 @@ class TrackFinished:
 
 
 @dataclass(frozen=True)
+class SyncProgress:
+    done: int
+    total: int
+    current: str        # archivo que se está copiando ("" al terminar)
+
+
+@dataclass(frozen=True)
 class JobFinished:
     summary: JobSummary
 
 
-Event = Union[JobStarted, TrackStarted, TrackProgress, TrackFinished, JobFinished]
+Event = Union[JobStarted, TrackStarted, TrackProgress, TrackFinished, SyncProgress, JobFinished]
 EventCallback = Callable[[Event], None]

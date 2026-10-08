@@ -24,9 +24,29 @@ class TrackResult:
 
 
 @dataclass
+class SyncResult:
+    """Resultado de copiar al dispositivo."""
+
+    target: Path
+    copied: int = 0
+    skipped: int = 0                    # ya estaban en el dispositivo con el mismo tamaño
+    failed: list[tuple[str, str]] = field(default_factory=list)    # (archivo, motivo)
+    bytes_copied: int = 0
+    cancelled: bool = False
+    aborted: str | None = None          # motivo si se detuvo antes de terminar
+
+    def __str__(self) -> str:
+        text = f"{self.copied} copiadas, {self.skipped} ya estaban"
+        return text + (f", {len(self.failed)} fallidas" if self.failed else "")
+
+
+@dataclass
 class JobSummary:
     playlist_name: str = ""
     results: list[TrackResult] = field(default_factory=list)
+    m3u_path: Path | None = None
+    sync: SyncResult | None = None
+    sync_error: str | None = None
 
     def add(self, result: TrackResult) -> None:
         self.results.append(result)

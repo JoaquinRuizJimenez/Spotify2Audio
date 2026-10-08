@@ -122,9 +122,11 @@ def test_load_errors_become_messages(err, expected):
 
 class FakePipeline:
     behavior = "ok"
+    last_options = None
 
     def __init__(self, options, on_event=None):
         self.options, self.on_event = options, on_event
+        FakePipeline.last_options = options
 
     def run(self, playlist, cancel=None):
         if FakePipeline.behavior == "dep":
@@ -180,3 +182,48 @@ def test_cannot_start_twice_and_cancel_token(tmp_path):
     assert summary.cancelled == 1
     ctrl.shutdown(2)
     assert not ctrl.busy
+
+
+# ---- credenciales, dispositivo y resumen ---------------------------------------------------------------------
+def test_missing_credentials_has_its_own_message():
+    from spotify2audio.core.errors import MissingCredentialsError
+    from spotify2audio.gui.controller import NEED_CREDENTIALS
+    made = []
+    ctrl = Controller(client_factory=lambda: (_ for _ in ()).throw(MissingCredentialsError("faltan")))
+    ctrl.load_playlist("u")
+    assert wait_for(ctrl, {NEED_CREDENTIALS})[-1][0] == NEED_CREDENTIALS
+    ctrl._thread.join()
+    ctrl._client = object()
+    ctrl.reset_client()
+    assert ctrl._client is None
+
+
+def test_form_device_options(tmp_path):
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    f = FormState(output_dir=str(tmp_path), copy_to_device=True, device=str(usb))
+    assert f.validate() == [] and f.to_job_options().device_path == usb / "Music"
+    assert FormState(output_dir=str(tmp_path), copy_to_device=False, device=str(usb)).to_job_options().device_path is None
+    assert any("Elige el dispositivo" in p for p in FormState(output_dir=str(tmp_path), copy_to_device=True).validate())
+    gone = FormState(output_dir=str(tmp_path), copy_to_device=True, device=str(tmp_path / "desaparecido"))
+    assert any("ya no está conectado" in p for p in gone.validate())
+    s = f.to_settings()
+    assert s.copy_to_device and s.last_device == str(usb)
+    assert FormState.from_settings(s).device == str(usb)
+
+
+def test_summary_message_levels(tmp_path):
+    from spotify2audio.gui.progress_model import summary_message
+    from spotify2audio.models.results import SyncResult
+    ok = JobSummary("L", [TrackResult(trk(), TrackStatus.OK)])
+    assert summary_message(ok)[0] == "info" and "1 correctas" in summary_message(ok)[1]
+    ok.sync = SyncResult(tmp_path, copied=3)
+    level, text = summary_message(ok)
+    assert level == "info" and "3 copiadas" in text and "expulsa" in text
+    ok.sync.failed = [("a.mp3", "x")]
+    assert summary_message(ok)[0] == "warning" and "a.mp3" in summary_message(ok)[1]
+    err = JobSummary("L", [TrackResult(trk(), TrackStatus.OK)], sync_error="Espacio insuficiente")
+    level, text = summary_message(err)
+    assert level == "warning" and "siguen en la carpeta" in text
+    failed = JobSummary("L", [TrackResult(trk(), TrackStatus.FAILED, error="x")])
+    assert summary_message(failed)[0] == "warning" and "failed_tracks.txt" in summary_message(failed)[1]

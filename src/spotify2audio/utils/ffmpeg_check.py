@@ -15,7 +15,7 @@ _INSTALL_HINT = (
 )
 
 
-def _candidate_dirs() -> list[Path]:
+def tool_dirs() -> list[Path]:
     dirs: list[Path] = []
     if getattr(sys, "frozen", False):                      # PyInstaller
         dirs.append(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)))
@@ -25,7 +25,7 @@ def _candidate_dirs() -> list[Path]:
 
 
 def find_tool(name: str = "ffmpeg") -> str | None:
-    for d in _candidate_dirs():
+    for d in tool_dirs():
         p = d / f"{name}{_EXE}"
         if p.is_file():
             return str(p)
@@ -43,5 +43,5 @@ def ensure_ffmpeg() -> tuple[str, str]:
 def ffmpeg_version(ffmpeg_path: str) -> str:
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0  # sin ventana de consola
     out = subprocess.run([ffmpeg_path, "-version"], capture_output=True, text=True, encoding="utf-8",
-                     errors="replace", timeout=10, creationflags=flags)
+                         errors="replace", timeout=10, creationflags=flags)
     return out.stdout.splitlines()[0] if out.stdout else "desconocida"

@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core.events import TrackFinished, TrackProgress
-from ..models.results import TrackResult, TrackStatus
+from ..models.results import JobSummary, TrackResult, TrackStatus
+from ..services.device_sync import EJECT_REMINDER
 
 MAX_REASON = 70
 
@@ -61,3 +62,30 @@ class ProgressTracker:
     @property
     def label(self) -> str:
         return f"{self.completed} de {self.total}"
+
+
+def summary_message(summary: JobSummary) -> tuple[str, str]:
+    """(nivel, texto) para el aviso final: nivel 'info' o 'warning'."""
+    lines = [f"{summary}."]
+    level = "info"
+    if summary.failed:
+        level = "warning"
+        lines.append("\nLas canciones fallidas están en failed_tracks.txt dentro de la carpeta de destino.\n"
+                     "Pulsa «Iniciar conversión» de nuevo para reintentarlas.")
+    sync = summary.sync
+    if sync:
+        lines.append(f"\nDispositivo ({sync.target}): {sync}.")
+        if sync.failed:
+            level = "warning"
+            lines.append("No se pudieron copiar: " + ", ".join(name for name, _ in sync.failed[:5])
+                         + ("…" if len(sync.failed) > 5 else ""))
+        if sync.aborted:
+            level = "warning"
+            lines.append(sync.aborted)
+        if sync.copied and not sync.cancelled:
+            lines.append(EJECT_REMINDER)
+    if summary.sync_error:
+        level = "warning"
+        lines.append(f"\nNo se pudo copiar al dispositivo: {summary.sync_error}\n"
+                     "Las canciones siguen en la carpeta de destino.")
+    return level, "\n".join(lines)
